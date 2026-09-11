@@ -271,7 +271,7 @@ namespace DataStage2Airflow.Generation
                 foreach (var line in function.ToString().TrimEnd('\n').Split('\n')) w.Line(line.Length == 0 ? string.Empty : line);
             }
 
-            return Tidy(w.ToString());
+            return PythonWriter.Tidy(w.ToString());
         }
 
         private static void RenderParameters(PythonWriter w, DsJob job)
@@ -295,30 +295,6 @@ namespace DataStage2Airflow.Generation
             }
 
             w.Line("]");
-        }
-
-        private static string Tidy(string code)
-        {
-            // Strip trailing blanks and collapse runs of more than two blank lines.
-            var lines = code.Replace("\r\n", "\n").Split('\n').Select(l => l.TrimEnd()).ToList();
-            var result = new StringBuilder();
-            int blanks = 0;
-            foreach (var line in lines)
-            {
-                if (line.Length == 0)
-                {
-                    blanks++;
-                    if (blanks > 2) continue;
-                }
-                else
-                {
-                    blanks = 0;
-                }
-
-                result.Append(line).Append('\n');
-            }
-
-            return result.ToString().TrimEnd('\n') + "\n";
         }
     }
 
@@ -534,27 +510,7 @@ namespace DataStage2Airflow.Generation
         public void Note(string message) => Report.Notes.Add(message);
 
         /// <summary>Writes <c>target = function(args)</c>, one argument per line when it gets long.</summary>
-        public void Call(string? target, string function, IList<string> args)
-        {
-            var prefix = target == null ? string.Empty : target + " = ";
-            var single = $"{prefix}{function}({string.Join(", ", args)})";
-            if (single.Length + (Run.IndentLevel * 4) <= 100 && args.All(a => a.IndexOf('\n') < 0))
-            {
-                Run.Line(single);
-                return;
-            }
-
-            using (Run.Block($"{prefix}{function}("))
-            {
-                foreach (var arg in args)
-                {
-                    var lines = arg.Split('\n');
-                    for (int i = 0; i < lines.Length; i++) Run.Line(lines[i] + (i == lines.Length - 1 ? "," : string.Empty));
-                }
-            }
-
-            Run.Line(")");
-        }
+        public void Call(string? target, string function, IList<string> args) => Run.Call(target, function, args);
 
         public TranslationResult Translate(string text, INameResolver resolver, string what, TranslationUse use = TranslationUse.Value)
         {

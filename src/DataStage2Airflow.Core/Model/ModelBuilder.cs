@@ -580,9 +580,10 @@ namespace DataStage2Airflow.Model
             foreach (var property in record.Properties)
             {
                 if (consumed.Contains(property.Key)) continue;
-                if (record.Collection(property.Key) != null && record.Collection(property.Key)!.Items.Count > 0)
+                var collection = record.Collection(property.Key);
+                if (collection != null && collection.Items.Count > 0)
                 {
-                    activity.UnmappedProperties.Add(new KeyValuePair<string, string>(property.Key, $"<{record.Collection(property.Key)!.Items.Count} subrecords>"));
+                    activity.UnmappedProperties.Add(new KeyValuePair<string, string>(property.Key, $"<{collection.Items.Count} subrecords>"));
                     continue;
                 }
 

@@ -236,9 +236,11 @@ namespace DataStage2Airflow.Generation.Emitters
             var link = output.Link;
             var conditions = new List<string>();
             if (link.IsOtherwise) conditions.Add("not written");
-            if (output.Condition != null) conditions.Add(conditions.Count > 0 ? "(" + output.Condition + ")" : output.Condition);
+            if (output.Condition != null) conditions.Add(output.Condition);
             if (link.RowLimit > 0) conditions.Add($"len({output.List}) < {link.RowLimit}");
-            if (conditions.Count > 1) conditions[0] = conditions[0].StartsWith("(", StringComparison.Ordinal) || conditions[0] == "not written" ? conditions[0] : "(" + conditions[0] + ")";
+
+            // The constraint can hold a top-level "or" or "if ... else", so it is parenthesized when joined with "and".
+            if (output.Condition != null && conditions.Count > 1) conditions[link.IsOtherwise ? 1 : 0] = "(" + output.Condition + ")";
 
             var label = link.Name + (link.Constraint != null ? ": " + Py.Short(link.Constraint, 80) : string.Empty) + (link.IsOtherwise ? " (otherwise)" : string.Empty);
             if (streamOutputs > 1 || link.Constraint != null) w.Comment(label);
@@ -268,13 +270,9 @@ namespace DataStage2Airflow.Generation.Emitters
             var text = variable.InitialValue;
             if (!string.IsNullOrWhiteSpace(text))
             {
-                if (ExpressionParser.TryParse(text!, c.Dialect, out _, out _))
-                {
-                    var result = new PythonTranslator(resolver, c.Dialect).TranslateValue(text!);
-                    if (result.Ok) return result.Code;
-                }
-
-                return Py.Str(text);
+                // An initial value that does not translate (plain text, an unknown name) is used as a string.
+                var result = new PythonTranslator(resolver, c.Dialect).TranslateValue(text!);
+                return result.Ok ? result.Code : Py.Str(text);
             }
 
             switch (c.Typed ? variable.LogicalType : DsLogicalType.String)

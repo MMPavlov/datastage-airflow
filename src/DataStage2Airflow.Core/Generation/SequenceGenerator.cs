@@ -180,6 +180,9 @@ namespace DataStage2Airflow.Generation
 
             // exception handler -> the tasks whose failure it handles.
             private readonly Dictionary<Node, List<Node>> _watchers = new Dictionary<Node, List<Node>>();
+
+            // (trigger, result variable) -> the trigger's Python condition, translated once.
+            private readonly Dictionary<(Trigger Trigger, string Result), string> _conditions = new Dictionary<(Trigger, string), string>();
             private bool _usesRoutines;
 
             public Builder(SequenceGenerator owner, DsJob job, string dagId)
@@ -523,29 +526,7 @@ namespace DataStage2Airflow.Generation
                 w.Line();
                 DagHeader(w, Options, _owner._project, _job, _dagId, "sequence", _job.Parameters);
                 foreach (var line in text.TrimEnd('\n').Split('\n')) w.Line(line);
-                return Tidy(w.ToString());
-            }
-
-            private static string Tidy(string code)
-            {
-                var sb = new StringBuilder();
-                int blanks = 0;
-                foreach (var raw in code.Replace("\r\n", "\n").Split('\n'))
-                {
-                    var line = raw.TrimEnd();
-                    if (line.Length == 0)
-                    {
-                        if (++blanks > 2) continue;
-                    }
-                    else
-                    {
-                        blanks = 0;
-                    }
-
-                    sb.Append(line).Append('\n');
-                }
-
-                return sb.ToString().TrimEnd('\n') + "\n";
+                return PythonWriter.Tidy(w.ToString());
             }
 
             private string Docstring()
@@ -841,7 +822,7 @@ namespace DataStage2Airflow.Generation
                         if (a.SmtpServer != null) mail.Add("smtp_server=" + Text(a.SmtpServer, a, "SMTP server"));
                         if (a.Attachments != null) mail.Add("attachments=" + Text(a.Attachments, a, "attachments"));
                         if (a.IncludeJobStatus) mail.Add("include_status=True");
-                        Call(w, r, "seq.send_notification", mail);
+                        w.Call(r, "seq.send_notification", mail);
                         break;
 
                     case ActivityKind.WaitForFile:
@@ -917,7 +898,7 @@ namespace DataStage2Airflow.Generation
                 if (!failOnError) args.Add("fail_on_error=False");
                 if (onWarning != "ok") args.Add("on_warning=" + Py.Str(onWarning));
                 if (NeedsUserStatus(a)) args.Add("need_user_status=True");
-                Call(w, r, "seq.run_job", args);
+                w.Call(r, "seq.run_job", args);
             }
 
             private string ParameterDict(Activity a)
@@ -998,6 +979,16 @@ namespace DataStage2Airflow.Generation
 
             /// <summary>Python condition for a trigger evaluated against the activity result <paramref name="r"/>.</summary>
             private string Condition(Trigger trigger, Activity a, string r)
+            {
+                // The report previews branch conditions before the DAG is rendered; translating a trigger
+                // twice would record its issues and notes twice.
+                if (_conditions.TryGetValue((trigger, r), out var cached)) return cached;
+                var condition = TranslateTrigger(trigger, a, r);
+                _conditions[(trigger, r)] = condition;
+                return condition;
+            }
+
+            private string TranslateTrigger(Trigger trigger, Activity a, string r)
             {
                 bool result = HasResult(a);
                 switch (trigger.Kind)
@@ -1100,27 +1091,6 @@ namespace DataStage2Airflow.Generation
 
                 foreach (var problem in result.Problems) Issue(a, "SEQ031", $"{what}: {problem}", true);
                 return result.Code;
-            }
-
-            private static void Call(PythonWriter w, string target, string function, List<string> args)
-            {
-                var single = $"{target} = {function}({string.Join(", ", args)})";
-                if (single.Length + (w.IndentLevel * 4) <= 100 && args.All(x => x.IndexOf('\n') < 0))
-                {
-                    w.Line(single);
-                    return;
-                }
-
-                w.Line($"{target} = {function}(");
-                w.Indent();
-                foreach (var arg in args)
-                {
-                    var lines = arg.Split('\n');
-                    for (int i = 0; i < lines.Length; i++) w.Line(lines[i] + (i == lines.Length - 1 ? "," : string.Empty));
-                }
-
-                w.Dedent();
-                w.Line(")");
             }
 
             // ------------------------------------------------------------------ report
