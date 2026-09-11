@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>ds2af</AssemblyName>
+    <RootNamespace>DataStage2Airflow.Cli</RootNamespace>
+    <!-- Run on any installed runtime from 8.0 upwards. -->
+    <RollForward>Major</RollForward>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DataStage2Airflow.Core\DataStage2Airflow.Core.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- netstandard2.0 keeps the engine usable from .NET Framework 4.6.1+ and .NET Core 3.x;
+         net8.0 is built alongside it for full nullable analysis (netstandard2.0 has no BCL annotations). -->
+    <TargetFrameworks>netstandard2.0;net8.0</TargetFrameworks>
+    <RootNamespace>DataStage2Airflow</RootNamespace>
+    <AssemblyName>DataStage2Airflow.Core</AssemblyName>
+    <Description>Converts IBM/Ascential DataStage exports (.dsx / .xml) into Apache Airflow DAGs and Python jobs.</Description>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+    <Nullable>annotations</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The Python runtime shipped next to the generated DAGs. -->
+    <EmbeddedResource Include="Runtime\python\**\*.py" LogicalName="pyruntime/%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,6 @@
+CUST_ID,NAME,CITY,COUNTRY_CODE,BALANCE,SIGNUP_DATE,STATUS
+1,"  alice   smith ",Berlin,DE,100.50,2004-01-15,A
+2,bob jones,,US,,2004-02-30,A
+3,carol white,Paris,FR,250.00,2003-11-02,I
+4,dave brown,Lyon,XX,75.25,2005-03-10,A
+5,eve black,,DE,0.00,2005-05-05,A
