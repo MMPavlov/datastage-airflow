@@ -96,9 +96,12 @@ def unsupported(name, *args):
 def _is_null(value):
     if value is None:
         return True
-    if isinstance(value, float) and value != value:
-        return True
-    return type(value).__name__ in ("NAType", "NaTType")
+    cls = type(value)
+    if cls is str or cls is int or cls is Decimal:
+        return False
+    if isinstance(value, float):
+        return value != value
+    return cls.__name__ in ("NAType", "NaTType")
 
 
 def _any_null(*values):
@@ -143,10 +146,10 @@ def _decimal_str(value):
 
 def to_str(value):
     """The string DataStage produces when a value is used as a string."""
-    if _is_null(value):
-        return None
     if isinstance(value, str):
         return value
+    if _is_null(value):
+        return None
     if isinstance(value, bool):
         return "1" if value else "0"
     if isinstance(value, int):
@@ -227,13 +230,20 @@ def flag(value):
     return 1 if truth(value) else 0
 
 
+def not_(value):
+    """NOT: the logical complement. NOT of null is null, as in BASIC and SQL three-valued logic."""
+    if _is_null(value):
+        return None
+    return not truth(value)
+
+
 # --------------------------------------------------------------------------- operators
 
 def concat(*values):
     for value in values:
         if _is_null(value):
             return None
-    return "".join(to_str(v) for v in values)
+    return "".join([to_str(v) for v in values])
 
 
 def neg(value):
@@ -269,8 +279,6 @@ def divide(a, b):
     a, b = _pair(to_number(a), to_number(b))
     if b == 0:
         raise RowError("division by zero")
-    if isinstance(a, int) and isinstance(b, int):
-        return a / b
     return a / b
 
 
@@ -515,6 +523,7 @@ def field(value, delimiter, occurrence, count=1):
 
 
 _WS = " \t"
+_run_patterns = {}
 
 
 def _trim_chars(text, chars, option):
@@ -527,19 +536,12 @@ def _trim_chars(text, chars, option):
         return text.rstrip(chars)
     if option == "B":
         return text.strip(chars)
-    # R and D: leading, trailing and redundant (runs inside reduced to one character)
-    stripped = text.strip(chars)
-    out = []
-    previous_was_trim = False
-    for c in stripped:
-        if c in chars:
-            if not previous_was_trim:
-                out.append(c)
-            previous_was_trim = True
-        else:
-            out.append(c)
-            previous_was_trim = False
-    return "".join(out)
+    # R and D: leading, trailing and redundant (each run inside reduced to its first character)
+    runs = _run_patterns.get(chars)
+    if runs is None:
+        members = "[" + "".join(_re.escape(c) for c in chars) + "]"
+        runs = _run_patterns[chars] = _re.compile("(" + members + ")" + members + "+")
+    return runs.sub(r"\1", text.strip(chars))
 
 
 def trim(value, strip_char=None, option=None):
@@ -967,7 +969,6 @@ def _parse_components(text, fmt):
 
 
 def _format_value(value, fmt):
-    regex, fields = _compile_format(fmt)
     out = []
     pos = 0
     for m in _TOKEN.finditer(fmt):
@@ -1510,7 +1511,18 @@ _D_CODE = _re.compile(r"^D(?P<digits>[0-4])?(?P<sep>[^A-Za-z0-9\[\]]?)(?P<order>
                       _re.IGNORECASE)
 
 
+_date_code_cache = {}
+
+
 def _date_code(code):
+    """(digits, separator, order, widths, month alphabetic by default) of a D conversion code, parsed once."""
+    parsed = _date_code_cache.get(code)
+    if parsed is None:
+        parsed = _date_code_cache[code] = _parse_date_code(code)
+    return parsed
+
+
+def _parse_date_code(code):
     m = _D_CODE.match(code.strip())
     if not m:
         raise NotTranslated("unsupported date conversion code %r" % code)
@@ -1519,7 +1531,7 @@ def _date_code(code):
     order = (m.group("order") or "").upper()
     if order == "E":
         order = "DMY"
-    widths = [w.strip().upper() for w in (m.group("widths") or "").split(",")] if m.group("widths") else []
+    widths = tuple(w.strip().upper() for w in (m.group("widths") or "").split(",")) if m.group("widths") else ()
     alpha_default = sep == "" and not order
     if not order:
         order = "DMY" if alpha_default else "MDY"
