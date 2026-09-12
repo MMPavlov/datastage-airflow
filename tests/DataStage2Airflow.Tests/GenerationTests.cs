@@ -1,3 +1,4 @@
+using System.IO;
 using System.Linq;
 using DataStage2Airflow.Generation;
 using Xunit;
@@ -10,6 +11,30 @@ namespace DataStage2Airflow.Tests
         {
             var sink = new MemorySink();
             var result = new Migrator(options ?? new MigrationOptions()).Run(new[] { TestPaths.SampleDsx }, sink);
+            return (result, sink);
+        }
+
+        /// <summary>Converts the sample project with text replaced in one of its files, for cases the samples do not cover.</summary>
+        private static (MigrationResult Result, MemorySink Sink) ConvertVariant(string file, params (string Find, string Replace)[] edits)
+        {
+            var folder = TestPaths.NewTempDirectory("variant");
+            foreach (var path in Directory.GetFiles(TestPaths.SampleDsx))
+            {
+                var text = File.ReadAllText(path);
+                if (Path.GetFileName(path) == file)
+                {
+                    foreach (var (find, replace) in edits)
+                    {
+                        Assert.Contains(find, text);
+                        text = text.Replace(find, replace);
+                    }
+                }
+
+                File.WriteAllText(Path.Combine(folder, Path.GetFileName(path)), text);
+            }
+
+            var sink = new MemorySink();
+            var result = new Migrator(new MigrationOptions()).Run(new[] { folder }, sink);
             return (result, sink);
         }
 
@@ -142,6 +167,38 @@ namespace DataStage2Airflow.Tests
             Assert.Contains("def format_run_tag(prefix, run_date):", routines);
             Assert.Contains("return F.concat(prefix, \"_\", F.convert(\"-\", \"\", run_date))", routines);
             Assert.Contains("raise NotImplementedError(\"routine CleanPhone has not been ported from DataStage BASIC\")", routines);
+        }
+
+        [Fact]
+        public void Each_trigger_issue_is_reported_once()
+        {
+            // Branch conditions are translated for the report and for the DAG; the issue must not repeat.
+            var (result, _) = ConvertVariant("seq_daily_load.dsx", ("Or JA_Load_Customers.$JobStatus = DSJS.RUNWARN", "Or Bogus.$Thing = 1"));
+            var issue = Assert.Single(result.Report.Sequences.Single().Issues, i => i.Code == "SEQ031");
+            Assert.Contains("Bogus.$Thing", issue.Message);
+        }
+
+        [Fact]
+        public void Row_limit_applies_to_a_constraint_with_a_top_level_or()
+        {
+            var (_, sink) = ConvertVariant(
+                "px_load_customers.dsx",
+                ("Constraint \"lnkCustomers.STATUS", "Constraint \"(lnkCustomers.STATUS"),
+                ("And svValidDate\"", "Or lnkCustomers.STATUS = 'B') And svValidDate Or lnkCustomers.CUST_ID = 1\""),
+                ("RowLimit \"0\"", "RowLimit \"5\""));
+            var module = sink.Files["dags/ds2af_jobs/dwproj/px_load_customers.py"];
+            Assert.Contains(
+                "if ((row[\"STATUS\"] == \"A\" or row[\"STATUS\"] == \"B\") and F.truth(sv_valid_date) or row[\"CUST_ID\"] == 1) and len(out_lnk_clean) < 5:",
+                module);
+        }
+
+        [Fact]
+        public void Filter_rewrites_leave_string_literals_alone()
+        {
+            var (_, sink) = ConvertVariant("px_sales_summary.dsx", ("AMOUNT > 0 AND REGION IS NOT NULL", "AMOUNT > 0 AND REGION <> 'TRUE' AND PRODUCT LIKE 'W%'"));
+            var module = sink.Files["dags/ds2af_jobs/dwproj/px_sales_summary.py"];
+            Assert.Contains("F.ne(row[\"REGION\"], \"TRUE\")", module);
+            Assert.Contains("F.like(row[\"PRODUCT\"], \"W%\")", module);
         }
     }
 }

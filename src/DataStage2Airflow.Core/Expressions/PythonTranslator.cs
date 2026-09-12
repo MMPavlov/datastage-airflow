@@ -293,6 +293,8 @@ namespace DataStage2Airflow.Expressions
 
                     return new Py($"{_f}.neg({operand.Code})", PrecAtom, operand.Type, operand.Nullable);
                 default:
+                    // NOT of null is null (BASIC and SQL three-valued logic), so a null operand keeps a condition false.
+                    if (operand.Nullable) return new Py($"{_f}.not_({operand.Code})", PrecAtom, DsLogicalType.Integer, true, true);
                     return new Py("not " + Wrap(AsCondition(operand), PrecNot), PrecNot, DsLogicalType.Integer, false, true);
             }
         }

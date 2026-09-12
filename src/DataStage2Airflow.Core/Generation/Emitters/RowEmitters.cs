@@ -199,6 +199,9 @@ namespace DataStage2Airflow.Generation.Emitters
     /// <summary>Filter: SQL-like where clauses, each routed to an output link.</summary>
     internal sealed class FilterEmitter : StageEmitter
     {
+        private static readonly Regex SqlLiteral = new Regex("'[^']*'|\"[^\"]*\"");
+        private static readonly Regex LiteralMark = new Regex("\\u0001(\\d+)\\u0001");
+
         public override string Implementation => "dsio.filter_rows";
 
         public override bool Handles(Stage stage, JobKind kind) => TypeIs(stage, "PxFilter");
@@ -255,18 +258,25 @@ namespace DataStage2Airflow.Generation.Emitters
             c.Call(c.Assign(assigned.ToArray()) + (assigned.Count == 1 ? ", " : string.Empty), "dsio.filter_rows", args);
         }
 
-        /// <summary>SQL predicates to DataStage expression syntax: IS [NOT] NULL, [NOT] LIKE, BETWEEN.</summary>
+        /// <summary>SQL predicates to DataStage expression syntax: IS [NOT] NULL, [NOT] LIKE, BETWEEN, TRUE, FALSE.
+        /// String literals are set aside first, so that the rewrites never change their text.</summary>
         internal static string SqlToExpression(string clause)
         {
-            var text = clause;
+            const string Literal = "\u0001\\d+\u0001";
+            var literals = new List<string>();
+            var text = SqlLiteral.Replace(clause, m =>
+            {
+                literals.Add(m.Value);
+                return "\u0001" + Py.Int(literals.Count - 1) + "\u0001";
+            });
             text = Regex.Replace(text, "([\\w.$]+)\\s+IS\\s+NOT\\s+NULL", "IsNotNull($1)", RegexOptions.IgnoreCase);
             text = Regex.Replace(text, "([\\w.$]+)\\s+IS\\s+NULL", "IsNull($1)", RegexOptions.IgnoreCase);
-            text = Regex.Replace(text, "([\\w.$]+)\\s+NOT\\s+LIKE\\s+('[^']*')", "Not(Like($1, $2))", RegexOptions.IgnoreCase);
-            text = Regex.Replace(text, "([\\w.$]+)\\s+LIKE\\s+('[^']*')", "Like($1, $2)", RegexOptions.IgnoreCase);
-            text = Regex.Replace(text, "([\\w.$]+)\\s+BETWEEN\\s+('[^']*'|[\\w.+-]+)\\s+AND\\s+('[^']*'|[\\w.+-]+)", "($1 >= $2 AND $1 <= $3)", RegexOptions.IgnoreCase);
+            text = Regex.Replace(text, "([\\w.$]+)\\s+NOT\\s+LIKE\\s+(" + Literal + ")", "Not(Like($1, $2))", RegexOptions.IgnoreCase);
+            text = Regex.Replace(text, "([\\w.$]+)\\s+LIKE\\s+(" + Literal + ")", "Like($1, $2)", RegexOptions.IgnoreCase);
+            text = Regex.Replace(text, "([\\w.$]+)\\s+BETWEEN\\s+(" + Literal + "|[\\w.+-]+)\\s+AND\\s+(" + Literal + "|[\\w.+-]+)", "($1 >= $2 AND $1 <= $3)", RegexOptions.IgnoreCase);
             text = Regex.Replace(text, "\\bTRUE\\b", "1", RegexOptions.IgnoreCase);
             text = Regex.Replace(text, "\\bFALSE\\b", "0", RegexOptions.IgnoreCase);
-            return text;
+            return LiteralMark.Replace(text, m => literals[Text.ParseInt(m.Groups[1].Value)]);
         }
     }
 

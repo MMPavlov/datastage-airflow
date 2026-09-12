@@ -95,7 +95,7 @@ namespace DataStage2Airflow.Dsx
                 }
                 else if (c < 0x20)
                 {
-                    sb.Append("\\(").Append(((int)c).ToString("X")).Append(')');
+                    sb.Append("\\(").Append(((int)c).ToString("X", System.Globalization.CultureInfo.InvariantCulture)).Append(')');
                 }
                 else
                 {

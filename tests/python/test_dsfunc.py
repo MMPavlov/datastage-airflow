@@ -105,6 +105,11 @@ class Semantics(unittest.TestCase):
         self.assertFalse(F.truth(Decimal("0.0")))
         self.assertTrue(F.truth(True))
 
+    def test_not_of_null_is_null(self):
+        self.assertIsNone(F.not_(None))
+        self.assertIs(F.not_(0), True)
+        self.assertIs(F.not_("abc"), False)
+
     def test_arithmetic(self):
         self.assertEqual(F.add(1, Decimal("1.5")), Decimal("2.5"))
         self.assertEqual(F.basic_add("2", "3"), 5)

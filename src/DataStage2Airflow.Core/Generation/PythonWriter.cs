@@ -46,6 +46,48 @@ namespace DataStage2Airflow.Generation
             _indent--;
         }
 
+        /// <summary>Writes <c>target = function(args)</c>, one argument per line when it gets long.</summary>
+        public PythonWriter Call(string? target, string function, IList<string> args)
+        {
+            var prefix = target == null ? string.Empty : target + " = ";
+            var single = $"{prefix}{function}({string.Join(", ", args)})";
+            if (single.Length + (_indent * 4) <= 100 && single.IndexOf('\n') < 0) return Line(single);
+
+            using (Block($"{prefix}{function}("))
+            {
+                foreach (var arg in args)
+                {
+                    var lines = arg.Split('\n');
+                    for (int i = 0; i < lines.Length; i++) Line(lines[i] + (i == lines.Length - 1 ? "," : string.Empty));
+                }
+            }
+
+            return Line(")");
+        }
+
+        /// <summary>Strips trailing blanks, collapses runs of more than two blank lines and ends the text with one newline.</summary>
+        public static string Tidy(string code)
+        {
+            var sb = new StringBuilder(code.Length);
+            int blanks = 0;
+            foreach (var raw in code.Replace("\r\n", "\n").Split('\n'))
+            {
+                var line = raw.TrimEnd();
+                if (line.Length == 0)
+                {
+                    if (++blanks > 2) continue;
+                }
+                else
+                {
+                    blanks = 0;
+                }
+
+                sb.Append(line).Append('\n');
+            }
+
+            return sb.ToString().TrimEnd('\n') + "\n";
+        }
+
         /// <summary>A comment, one "#" line per input line.</summary>
         public PythonWriter Comment(string text)
         {

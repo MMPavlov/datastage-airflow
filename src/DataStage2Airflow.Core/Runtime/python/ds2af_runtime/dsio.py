@@ -58,17 +58,62 @@ def _clean(value):
     return None if F._is_null(value) else value
 
 
+_CHUNK = 65536
+
+
+def _column_values(series):
+    """A frame column's values as a list; pandas missing values become None."""
+    values = series.tolist()
+    missing = series.isna().to_numpy()
+    if missing.any():
+        # isna() also flags Decimal("NaN"), which _clean keeps.
+        for i in missing.nonzero()[0]:
+            values[i] = _clean(values[i])
+    return values
+
+
+def _column_chunks(frame):
+    """(row count, value list per column) for successive chunks of the frame's rows."""
+    for start in range(0, len(frame), _CHUNK):
+        part = frame.iloc[start:start + _CHUNK]
+        yield len(part), [_column_values(part.iloc[:, i]) for i in range(part.shape[1])]
+
+
 def rows(frame):
     """The rows of a frame as dicts; pandas missing values become None."""
     if frame is None or len(frame) == 0:
         return
     columns = list(frame.columns)
-    for values in frame.itertuples(index=False, name=None):
-        yield {c: _clean(v) for c, v in zip(columns, values)}
+    for _, lists in _column_chunks(frame):
+        for values in zip(*lists):
+            yield dict(zip(columns, values))
+
+
+def _value_rows(frame, wanted):
+    """For each row that rows() yields, the values of the wanted columns (None for a column the frame
+    lacks), without building the row dicts."""
+    if frame is None or len(frame) == 0 or len(frame.columns) == 0:
+        return
+    position = {name: i for i, name in enumerate(frame.columns)}
+    for size, lists in _column_chunks(frame):
+        missing = [None] * size
+        picked = [lists[position[name]] if name in position else missing for name in wanted]
+        yield from zip(*picked) if picked else [()] * size
 
 
 def empty(columns):
     return pd.DataFrame(columns=names(columns), dtype=object)
+
+
+_QUANTA = {}
+
+
+def _quantum(scale):
+    """Decimal 1E-scale, the quantize target of a column scale."""
+    quantum = _QUANTA.get(scale)
+    if quantum is None:
+        quantum = _QUANTA[scale] = Decimal(1).scaleb(-scale)
+    return quantum
 
 
 def coerce(col, value):
@@ -89,7 +134,7 @@ def coerce(col, value):
         if t == "decimal":
             number = value if isinstance(value, Decimal) else Decimal(to_str(value).strip() or "0")
             if col.scale or col.length:
-                number = number.quantize(Decimal(1).scaleb(-col.scale), rounding=ROUND_DOWN)
+                number = number.quantize(_quantum(col.scale), rounding=ROUND_DOWN)
             return number
         if t == "float":
             return value if isinstance(value, float) else float(F.to_number(value))
@@ -104,16 +149,27 @@ def coerce(col, value):
     return value
 
 
+def _coerce_values(col, values):
+    """coerce() over one column's values; nulls and values that already have the declared type skip the call."""
+    t = col.type
+    if t == "string":
+        return [v if v is None or type(v) is str else coerce(col, v) for v in values]
+    if t == "integer":
+        return [v if v is None or type(v) is int else coerce(col, v) for v in values]
+    return [None if v is None else coerce(col, v) for v in values]
+
+
 def frame(records, columns, typed=True):
     """A frame with exactly the link's columns, in order, values coerced to the declared types."""
-    cols = names(columns)
-    if typed:
-        records = [{c.name: coerce(c, r.get(c.name)) for c in columns} for r in records]
-    else:
-        records = [{c: r.get(c) for c in cols} for r in records]
     if not records:
         return empty(columns)
-    return pd.DataFrame(records, columns=cols, dtype=object)
+    data = []
+    for col in columns:
+        values = [r.get(col.name) for r in records]
+        data.append(_coerce_values(col, values) if typed else values)
+    result = pd.DataFrame(dict(enumerate(data)), index=pd.RangeIndex(len(records)), dtype=object)
+    result.columns = names(columns)
+    return result
 
 
 def project(ctx, source, mapping, columns, typed=True):
@@ -142,9 +198,13 @@ def _parse_field(col, text, formats, typed):
         raise RowError("column %s: %r is not an integer" % (col.name, text))
     if t == "decimal":
         try:
-            return Decimal(stripped)
+            number = Decimal(stripped)
         except InvalidOperation:
+            number = None
+        # NaN and Infinity are no DataStage decimals; kept, they would fail later comparisons and output.
+        if number is None or not number.is_finite():
             raise RowError("column %s: %r is not a decimal" % (col.name, text))
+        return number
     if t == "float":
         try:
             return float(stripped)
@@ -163,7 +223,7 @@ def _format_decimal(col, value, padding):
     number = value if isinstance(value, Decimal) else Decimal(to_str(value))
     scale = col.scale or 0
     if scale:
-        number = number.quantize(Decimal(1).scaleb(-scale), rounding=ROUND_DOWN)
+        number = number.quantize(_quantum(scale), rounding=ROUND_DOWN)
     text = format(abs(number), "f")
     if padding and col.length:
         whole, _, fraction = text.partition(".")
@@ -172,24 +232,25 @@ def _format_decimal(col, value, padding):
     return ("-" + text) if number < 0 else text
 
 
-def _format_field(col, value, formats, null_value, decimal_padding, typed=True):
-    if F._is_null(value):
-        return null_value
+_DATE_FORMATTERS = {"date": F.date_to_string, "time": F.time_to_string, "timestamp": F.timestamp_to_string}
+
+
+def _field_formatter(col, formats, decimal_padding, typed=True):
+    """The function that writes a non-null value of the column as text; chosen once per column."""
     if not typed:
-        return to_str(value)
+        return to_str
     t = col.type
     if t == "string":
-        text = to_str(value)
-        return text.ljust(col.length) if col.fixed and col.length else text
+        if col.fixed and col.length:
+            return lambda value: to_str(value).ljust(col.length)
+        return to_str
     if t == "decimal":
-        return _format_decimal(col, value, decimal_padding)
-    if t == "date" and formats.get("date"):
-        return F.date_to_string(value, formats["date"])
-    if t == "time" and formats.get("time"):
-        return F.time_to_string(value, formats["time"])
-    if t == "timestamp" and formats.get("timestamp"):
-        return F.timestamp_to_string(value, formats["timestamp"])
-    return to_str(value)
+        return lambda value: _format_decimal(col, value, decimal_padding)
+    fmt = formats.get(t) if t in _DATE_FORMATTERS else None
+    if fmt:
+        convert = _DATE_FORMATTERS[t]
+        return lambda value: convert(value, fmt)
+    return to_str
 
 
 # --------------------------------------------------------------------------- sequential files
@@ -268,6 +329,8 @@ def read_delimited(ctx, paths, columns, delimiter=",", quote='"', header=False, 
     formats = {"date": date_format, "time": time_format, "timestamp": timestamp_format}
     out, rejected = [], []
     count = len(columns)
+    # Text columns (and untyped reads) keep the field text as it is.
+    parsers = [(col, _parse_field if typed and col.type != "string" else None) for col in columns]
     for path in _expand_paths(paths):
         if not os.path.exists(path):
             if missing in ("okay", "ok", "depends"):
@@ -297,10 +360,8 @@ def read_delimited(ctx, paths, columns, delimiter=",", quote='"', header=False, 
                 try:
                     if len(fields) != count:
                         raise RowError("%d field(s) found, %d expected" % (len(fields), count))
-                    values = {}
-                    for col, text in zip(columns, fields):
-                        values[col.name] = None if null_value is not None and text == null_value else _parse_field(col, text, formats, typed)
-                    out.append(values)
+                    out.append([None if text == null_value else parse(col, text, formats, typed) if parse else text
+                                for (col, parse), text in zip(parsers, fields)])
                 except RowError as exc:
                     raw = (delimiter or "").join(fields)
                     if reject:
@@ -325,30 +386,31 @@ def write_delimited(ctx, source, path, columns, delimiter=",", quote='"', header
         os.makedirs(directory, exist_ok=True)
     mode = "a" if append and os.path.exists(path) else "w"
     written = 0
+    formatters = [_field_formatter(c, formats, decimal_padding, typed) for c in columns]
+    quoted = [c.type == "string" for c in columns]
     with open(path, mode, encoding=encoding or ENCODING, errors=ENCODING_ERRORS, newline="") as handle:
         if header and mode == "w":
             handle.write(_join([c.name for c in columns], [False] * len(columns), delimiter, quote, final_delimiter) + line_end)
-        quoted = [c.type == "string" for c in columns]
-        for row in rows(source):
-            fields = [_format_field(c, row.get(c.name), formats, null_value, decimal_padding, typed) for c in columns]
+        write = handle.write
+        # _value_rows gives None for every null, so "is None" is the null test here.
+        for values in _value_rows(source, names(columns)):
+            fields = [null_value if v is None else to_text(v) for to_text, v in zip(formatters, values)]
             if fixed_width:
-                handle.write("".join(f.ljust(c.length or len(f))[:c.length or len(f)] for c, f in zip(columns, fields)) + line_end)
+                write("".join(f.ljust(c.length or len(f))[:c.length or len(f)] for c, f in zip(columns, fields)) + line_end)
             else:
-                nulls = [F._is_null(row.get(c.name)) for c in columns]
-                handle.write(_join(fields, [q and not n for q, n in zip(quoted, nulls)], delimiter, quote, final_delimiter) + line_end)
+                marks = [q and v is not None for q, v in zip(quoted, values)] if quote else None
+                write(_join(fields, marks, delimiter, quote, final_delimiter) + line_end)
             written += 1
     ctx.info("%s: %d row(s) written to %s", stage, written, path)
     return written
 
 
 def _join(fields, quoted, delimiter, quote, final_delimiter):
-    parts = []
-    for text, q in zip(fields, quoted):
-        if quote and q:
-            parts.append(quote + text.replace(quote, quote + quote) + quote)
-        else:
-            parts.append(text)
-    line = (delimiter or "").join(parts)
+    """One line of fields; with a quote character, the fields flagged in quoted are quoted, inner quotes doubled."""
+    if quote:
+        doubled = quote + quote
+        fields = [quote + text.replace(quote, doubled) + quote if q else text for text, q in zip(fields, quoted)]
+    line = (delimiter or "").join(fields)
     return line + (delimiter or "") if final_delimiter else line
 
 
@@ -420,7 +482,16 @@ def write_hashed(ctx, source, name, directory, columns, clear=False, stage="Hash
 
 # --------------------------------------------------------------------------- keys, lookups and joins
 
+# For integers within Decimal's 28-digit precision, str() gives the same text as the normalisation below.
+_EXACT_INT = 10 ** 28
+
+
 def _norm(value):
+    cls = type(value)
+    if cls is str:
+        return value
+    if cls is int and -_EXACT_INT < value < _EXACT_INT:
+        return str(value)
     if isinstance(value, bool):
         return str(int(value))
     if isinstance(value, (int, float, Decimal)):
@@ -667,7 +738,7 @@ def aggregate(ctx, stage, source, keys, calculations, columns, count_field=None,
         if count_field:
             record[count_field] = len(group)
         for input_col, function, output_col in calculations:
-            values = [r.get(input_col) for r in group if not F._is_null(r.get(input_col))]
+            values = [v for v in [r.get(input_col) for r in group] if v is not None and not F._is_null(v)]
             record[output_col] = _aggregate(function, values, len(group))
         out.append(record)
     return frame(out, columns)

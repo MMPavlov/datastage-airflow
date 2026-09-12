@@ -190,6 +190,13 @@ namespace DataStage2Airflow.Tests
         }
 
         [Fact]
+        public void Not_of_a_nullable_value_stays_null()
+        {
+            Assert.Equal("F.not_(F.eq(row[\"CITY\"], \"X\"))", Parallel().Translate("Not(lnk.CITY = \"X\")").Code);
+            Assert.Equal("not row[\"QTY\"] > 0", Parallel().Translate("Not(lnk.QTY > 0)").Code);
+        }
+
+        [Fact]
         public void Basic_or_then_and_keeps_left_to_right_grouping()
         {
             var t = new PythonTranslator(new DictionaryResolver().Add("A", "a", DsLogicalType.Integer, false).Add("B", "b", DsLogicalType.Integer, false).Add("C", "c", DsLogicalType.Integer, false), ExpressionDialect.Basic);
